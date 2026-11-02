@@ -137,10 +137,15 @@ for (const t of tripsCsv) {
   if (t.shape_id && shapes.has(t.shape_id)) routeShapes[r].add(t.shape_id);
   const st = [];
   for (const x of times) st.push(stopIndex.get(x.stop_id), toMinutes(x.departure_time || x.arrival_time));
-  trips.push({ r, s: t.service_id, d: +(t.direction_id || 0), h: t.trip_headsign, st });
+  trips.push({ r, s: t.service_id, d: +(t.direction_id || 0), h: t.trip_headsign, st, shapeId: t.shape_id });
 }
 trips.sort((a, b) => a.st[1] - b.st[1]);
 routes.forEach((route, i) => { route.shapes = [...routeShapes[i]].map(id => shapes.get(id)); });
+// sh = posição do traçado da viagem em routes[r].shapes (-1 se não tiver traçado)
+for (const t of trips) {
+  t.sh = [...routeShapes[t.r]].indexOf(t.shapeId);
+  delete t.shapeId;
+}
 
 const data = {
   agency: { name: agency.agency_name, url: agency.agency_url, phone: agency.agency_phone },

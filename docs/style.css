@@ -180,3 +180,73 @@ summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: 14
   max-width: calc(100% - 32px); box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
 }
 .leaflet-tooltip { font: 13px/1.3 system-ui, sans-serif; }
+
+/* Planeador de viagens */
+.ico { width: 18px; height: 18px; flex: none; vertical-align: -4px; }
+.pin { display: inline-block; flex: none; width: 12px; height: 12px; border-radius: 50%; }
+.pin-from { background: #1a73e8; box-shadow: 0 0 0 3px rgba(26, 115, 232, .25); }
+.pin-to { background: #d93025; box-shadow: 0 0 0 3px rgba(217, 48, 37, .25); }
+.planner {
+  position: relative; display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; margin-bottom: 4px; border-radius: 12px; background: var(--soft);
+}
+.pfield { display: flex; align-items: center; gap: 10px; }
+.pfield input {
+  flex: 1; min-width: 0; font: inherit; padding: 9px 12px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text);
+}
+.iconbtn {
+  flex: none; width: 38px; height: 38px; display: grid; place-items: center; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--muted);
+}
+.iconbtn:hover { color: var(--accent); }
+.prow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.prow select, .prow input {
+  font: inherit; font-size: 14px; padding: 7px 8px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text);
+}
+.primary {
+  margin-left: auto; border: 0; border-radius: 8px; padding: 8px 16px; cursor: pointer;
+  background: var(--accent); color: var(--accent-ink); font-weight: 600;
+}
+.suggest { margin: 0; background: var(--panel); border-radius: 8px; border: 1px solid var(--line); max-height: 280px; overflow-y: auto; }
+.suggest button {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; text-align: left; cursor: pointer;
+  border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--text);
+}
+.suggest li:last-child button { border-bottom: 0; }
+.suggest button:hover { background: var(--soft); }
+.suggest .text { min-width: 0; display: flex; flex-direction: column; }
+.suggest small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sicon { flex: none; width: 22px; display: grid; place-items: center; color: var(--muted); }
+.stopdot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid #1a1a1a; background: #fff; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.od { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 6px; font-weight: 600; }
+.od div { display: flex; align-items: center; gap: 10px; }
+.opts { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.opt {
+  display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; text-align: left; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text);
+}
+.opt:hover { background: var(--soft); }
+.opt[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.opt-top { display: flex; justify-content: space-between; gap: 10px; font-variant-numeric: tabular-nums; }
+.opt-top strong { font-size: 16px; }
+.opt-legs { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.opt-legs .walk { display: inline-flex; align-items: center; color: var(--muted); font-size: 13px; }
+.opt-legs .sep { color: var(--muted); }
+.opt-sub { color: var(--muted); font-size: 13px; }
+.steps { list-style: none; margin: 4px 0 0; padding: 0; }
+.step { display: flex; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.step:last-child { border-bottom: 0; }
+.step > .badge { margin-top: 1px; }
+.step a { color: var(--accent); }
+.step.ride { border-left: 4px solid var(--c); padding-left: 8px; margin-left: -12px; }
+.picking { cursor: crosshair; }
+.picking .leaflet-interactive { cursor: crosshair; }
+.mpin-from { background: #1a73e8; border: 3px solid #fff; border-radius: 50%; box-shadow: 0 1px 4px rgba(0, 0, 0, .4); }
+.mpin-to {
+  background: #d93025; border: 3px solid #fff; border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .4);
+}

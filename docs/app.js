@@ -1,6 +1,7 @@
 "use strict";
 (() => {
   const D = window.GTFS;
+  const planner = window.createPlanner(D);
   const $ = sel => document.querySelector(sel);
   const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -18,6 +19,7 @@
 
   const pad = n => String(n).padStart(2, "0");
   const fmtTime = m => `${pad(Math.floor(m / 60) % 24)}:${pad(m % 60)}`;
+  const fmtDuration = m => (m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`);
   const ymd = d => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
   const isoDate = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const fromYmd = s => new Date(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8));
@@ -25,12 +27,15 @@
   const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
   const nowMinutes = () => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); };
 
-  function distance(lat1, lon1, lat2, lon2) {
-    const r = Math.PI / 180, a = Math.sin((lat2 - lat1) * r / 2) ** 2 +
-      Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin((lon2 - lon1) * r / 2) ** 2;
-    return 12742000 * Math.asin(Math.sqrt(a));
-  }
-  const fmtDist = m => m < 1000 ? `${Math.round(m / 10) * 10} m` : `${(m / 1000).toFixed(1).replace(".", ",")} km`;
+  const distance = window.plannerDistance;
+  const fmtDist = m => m < 1000 ? `${Math.max(10, Math.round(m / 10) * 10)} m` : `${(m / 1000).toFixed(1).replace(".", ",")} km`;
+
+  const ICON = {
+    walk: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M13.5 5.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM9.8 8.9 7 23h2.1l1.8-8 2.1 2v6h2v-7.5l-2.1-2 .6-3A7.3 7.3 0 0 0 19 13v-2a5 5 0 0 1-4.3-2.4l-1-1.6a2 2 0 0 0-2.5-.8L6 8.3V13h2V9.6l1.8-.7"/></svg>',
+    pin: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7Zm0 9.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Z"/></svg>',
+    gps: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9 3h-2.07A7 7 0 0 0 13 5.07V3h-2v2.07A7 7 0 0 0 5.07 11H3v2h2.07A7 7 0 0 0 11 18.93V21h2v-2.07A7 7 0 0 0 18.93 13H21v-2Zm-9 6a5 5 0 1 1 0-10 5 5 0 0 1 0 10Z"/></svg>',
+    swap: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16 17.01V10h-2v7.01h-3L15 21l4-3.99h-3ZM9 3 5 6.99h3V14h2V6.99h3L9 3Z"/></svg>',
+  };
 
   // ---------- Horários ----------
   function serviceRuns(id, date) {
@@ -42,7 +47,11 @@
     return key >= s.start && key <= s.end && s.days[(date.getDay() + 6) % 7] === 1;
   }
 
-  const state = { date: startOfToday(), view: "home", route: null, stop: null, showAll: false, userPos: null };
+  const MY_LOCATION = { kind: "gps", label: "A minha localização" };
+  const state = {
+    date: startOfToday(), view: "home", route: null, stop: null, showAll: false, userPos: null,
+    from: MY_LOCATION, to: null, whenMode: "now", whenTime: "", selected: 0, picking: null, plan: null,
+  };
   let cache = { key: null, trips: [] };
   const activeTrips = () => {
     const key = ymd(state.date);
@@ -82,6 +91,7 @@
   const badge = (r, big) => `<span class="badge${big ? " big" : ""}" style="--c:${D.routes[r].color}">${esc(D.routes[r].short)}</span>`;
   const stopHref = i => `#paragem/${encodeURIComponent(D.stops[i].id)}`;
   const routeHref = r => `#linha/${encodeURIComponent(D.routes[r].short)}`;
+  const stopPoint = i => ({ kind: "stop", label: D.stops[i].label, lat: D.stops[i].lat, lon: D.stops[i].lon });
 
   // ---------- Mapa ----------
   const map = L.map("map", { zoomControl: false, renderer: L.canvas({ tolerance: 6 }) });
@@ -90,6 +100,7 @@
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   }).addTo(map);
+  map.createPane("plan").style.zIndex = 440;
   map.createPane("stops").style.zIndex = 450;
   const stopRenderer = L.canvas({ pane: "stops", tolerance: 8 });
 
@@ -99,29 +110,48 @@
       L.polyline(pts, { color: "#1a1a1a", weight: 8, opacity: .3, casing: true, interactive: false }).addTo(group);
       L.polyline(pts, { color: r.color, weight: 5, opacity: 1 }).addTo(group);
     });
-    group.on("click", () => { location.hash = routeHref(i); });
+    group.on("click", () => { if (!state.picking) location.hash = routeHref(i); });
     return group.addTo(map);
   });
 
   const stopMarkers = D.stops.map((s, i) => L.circleMarker([s.lat, s.lon], {
-    renderer: stopRenderer, radius: 5, color: "#1a1a1a", weight: 2, fillColor: "#ffffff", fillOpacity: 1,
+    renderer: stopRenderer, radius: 5, color: "#1a1a1a", weight: 2, fillColor: "#ffffff", fillOpacity: 1, bubblingMouseEvents: false,
   }).bindTooltip(s.label, { direction: "top", offset: [0, -6] })
-    .on("click", () => { location.hash = stopHref(i); })
+    .on("click", () => {
+      if (state.picking) setPoint(state.picking, stopPoint(i));
+      else location.hash = stopHref(i);
+    })
     .addTo(map));
 
+  const allBounds = L.latLngBounds(D.stops.map(s => [s.lat, s.lon]));
+  map.fitBounds(allBounds, { padding: [20, 20] });
+
   let userMarker = null;
-  map.fitBounds(L.latLngBounds(D.stops.map(s => [s.lat, s.lon])), { padding: [20, 20] });
+  const planLayer = L.featureGroup().addTo(map);
+  const planRenderer = L.svg({ pane: "plan" });
+  const pinLayer = L.layerGroup().addTo(map);
+  const pinIcon = kind => L.divIcon({ className: `mpin mpin-${kind}`, iconSize: kind === "to" ? [26, 26] : [18, 18], iconAnchor: kind === "to" ? [13, 26] : [9, 9] });
+
+  function drawPins() {
+    pinLayer.clearLayers();
+    for (const which of ["from", "to"]) {
+      const p = state[which];
+      if (p && p.lat != null && !(which === "from" && p.kind === "gps" && userMarker))
+        L.marker([p.lat, p.lon], { icon: pinIcon(which), interactive: false, keyboard: false }).addTo(pinLayer);
+    }
+  }
 
   function styleMap() {
     const r = state.view === "route" ? state.route : null;
+    const trip = state.view === "trip";
     routeLayers.forEach((layer, i) => {
-      const on = r === null || r === i;
-      layer.eachLayer(l => l.setStyle(l.options.casing ? { opacity: on ? .3 : 0 } : { opacity: on ? 1 : .2 }));
+      const on = !trip && (r === null || r === i);
+      layer.eachLayer(l => l.setStyle(l.options.casing ? { opacity: on ? .3 : 0 } : { opacity: on ? 1 : trip ? .12 : .2 }));
     });
     if (r !== null) routeLayers[r].bringToFront();
     stopMarkers.forEach((m, i) => {
       const selected = state.view === "stop" && state.stop === i;
-      const dim = r !== null && !stopRoutes[i].has(r);
+      const dim = trip || (r !== null && !stopRoutes[i].has(r));
       m.setStyle(selected
         ? { radius: 9, weight: 3, fillColor: "#1f6f5c", color: "#ffffff", opacity: 1, fillOpacity: 1 }
         : { radius: dim ? 3 : 5, weight: 2, fillColor: "#ffffff", color: "#1a1a1a", opacity: dim ? .35 : 1, fillOpacity: dim ? .35 : 1 });
@@ -133,6 +163,151 @@
     if (map.getZoom() < 15) map.setView(latlng, 16);
     else if (!map.getBounds().pad(-0.15).contains(latlng)) map.panTo(latlng);
   }
+
+  // Índice do ponto do traçado mais perto de (lat, lon), a partir de `start`.
+  function nearestIndex(shape, lat, lon, start) {
+    let best = start, bestD = Infinity;
+    for (let i = start; i < shape.length; i++) {
+      const d = (shape[i][0] - lat) ** 2 + ((shape[i][1] - lon) * 0.76) ** 2;
+      if (d < bestD) { bestD = d; best = i; }
+      else if (bestD < 4e-7 && d > bestD * 4) break; // já passou pela paragem
+    }
+    return best;
+  }
+
+  // Troço do traçado percorrido entre a paragem onde se entra e a paragem onde se sai.
+  function rideGeometry(leg) {
+    const t = leg.trip, stops = [];
+    for (let p = 0; p <= leg.to; p += 2) stops.push(D.stops[t.st[p]]);
+    const shape = D.routes[t.r].shapes[t.sh];
+    const ends = [stops[leg.from / 2], stops[stops.length - 1]];
+    if (!shape) return stops.slice(leg.from / 2).map(s => [s.lat, s.lon]);
+    let idx = 0, i0 = 0;
+    stops.forEach((s, k) => {
+      idx = nearestIndex(shape, s.lat, s.lon, idx);
+      if (k === leg.from / 2) i0 = idx;
+    });
+    return [[ends[0].lat, ends[0].lon], ...shape.slice(i0, idx + 1), [ends[1].lat, ends[1].lon]];
+  }
+
+  function drawPlan(option) {
+    planLayer.clearLayers();
+    if (!option) return;
+    const fromLL = [state.from.lat, state.from.lon], toLL = [state.to.lat, state.to.lon];
+    const walkLine = pts => L.polyline(pts, { renderer: planRenderer, color: "#3b3f3d", weight: 4, dashArray: "1 9", lineCap: "round", interactive: false }).addTo(planLayer);
+    if (option === "walk") { walkLine([fromLL, toLL]); return; }
+    const ll = i => (i === null ? null : [D.stops[i].lat, D.stops[i].lon]);
+    for (const leg of option.legs) {
+      if (leg.type === "walk") {
+        if (leg.min > 0) walkLine([ll(leg.from) || fromLL, ll(leg.to) || toLL]);
+        continue;
+      }
+      const pts = rideGeometry(leg), color = D.routes[leg.trip.r].color;
+      L.polyline(pts, { renderer: planRenderer, color: "#1a1a1a", weight: 10, opacity: .35, interactive: false }).addTo(planLayer);
+      L.polyline(pts, { renderer: planRenderer, color, weight: 6, interactive: false }).addTo(planLayer);
+      for (const p of [leg.from, leg.to]) {
+        L.circleMarker(ll(leg.trip.st[p]), { renderer: planRenderer, radius: 7, weight: 3, color: "#1a1a1a", fillColor: "#ffffff", fillOpacity: 1, interactive: false }).addTo(planLayer);
+      }
+    }
+  }
+
+  // ---------- Localização ----------
+  function locate() {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) return reject(new Error("Este dispositivo não permite obter a localização."));
+      navigator.geolocation.getCurrentPosition(pos => {
+        state.userPos = [pos.coords.latitude, pos.coords.longitude];
+        if (userMarker) userMarker.setLatLng(state.userPos);
+        else userMarker = L.circleMarker(state.userPos, { radius: 8, color: "#ffffff", weight: 3, fillColor: "#1a73e8", fillOpacity: 1, interactive: false }).addTo(map);
+        resolve(state.userPos);
+      }, () => reject(new Error("Não foi possível obter a sua localização.")), { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+    });
+  }
+  const farFromGuarda = (lat, lon) => planner.nearestStopDistance({ lat, lon }) > 15000;
+
+  // ---------- Pesquisa de moradas e locais (Photon, baseado no OpenStreetMap) ----------
+  const CENTER = allBounds.getCenter();
+  const BBOX = [allBounds.getWest() - .06, allBounds.getSouth() - .06, allBounds.getEast() + .06, allBounds.getNorth() + .06].map(n => n.toFixed(4)).join(",");
+  const placeLabel = p => p.name || [p.street, p.housenumber].filter(Boolean).join(" ");
+
+  async function geocode(q, signal) {
+    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6&lat=${CENTER.lat.toFixed(4)}&lon=${CENTER.lng.toFixed(4)}&bbox=${BBOX}`;
+    const res = await fetch(url, { signal });
+    if (!res.ok) throw new Error("geocode");
+    const seen = new Set();
+    return (await res.json()).features.map(f => {
+      const p = f.properties, label = placeLabel(p);
+      const sub = [p.name && p.street ? [p.street, p.housenumber].filter(Boolean).join(" ") : null, p.district || p.locality, p.city]
+        .filter((x, i, a) => x && a.indexOf(x) === i && x !== label).join(", ");
+      return { kind: "place", label, sub, lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0] };
+    }).filter(x => x.label && !seen.has(x.label + x.sub) && seen.add(x.label + x.sub));
+  }
+
+  async function reverseLabel(point) {
+    try {
+      const res = await fetch(`https://photon.komoot.io/reverse?lat=${point.lat.toFixed(5)}&lon=${point.lon.toFixed(5)}&limit=1`);
+      const f = (await res.json()).features[0];
+      const label = f && placeLabel(f.properties);
+      if (label && distance(point.lat, point.lon, f.geometry.coordinates[1], f.geometry.coordinates[0]) < 150) {
+        point.label = `Perto de ${label}`;
+        if (state.from === point || state.to === point) render(false);
+      }
+    } catch { /* fica "Ponto no mapa" */ }
+  }
+
+  // ---------- Planeamento ----------
+  const pointHash = p => `${p.lat.toFixed(5)},${p.lon.toFixed(5)}`;
+  const tripHash = () => `#viagem/${pointHash(state.from)}/${pointHash(state.to)}`;
+
+  function setPoint(which, point) {
+    state[which] = point;
+    stopPicking();
+    if (point.kind === "map") reverseLabel(point);
+    drawPins();
+    if (state.from && state.to) startPlan();
+    else render(false);
+  }
+
+  async function startPlan() {
+    if (!state.to) { showToast("Escolhe primeiro o destino."); return; }
+    if (!state.from) { showToast("Escolhe o ponto de partida."); return; }
+    if (state.from.kind === "gps") {
+      try {
+        const [lat, lon] = await locate();
+        if (farFromGuarda(lat, lon)) {
+          state.from = null;
+          showToast("Parece que não estás na Guarda. Escolhe o ponto de partida.", 6000);
+          if (state.view === "home") render(false); else location.hash = "#";
+          return;
+        }
+        state.from = { ...MY_LOCATION, lat, lon };
+      } catch (e) {
+        state.from = null;
+        showToast(e.message + " Escolhe o ponto de partida.", 6000);
+        if (state.view === "home") render(false); else location.hash = "#";
+        return;
+      }
+    }
+    state.selected = 0;
+    drawPins();
+    const hash = tripHash();
+    if (location.hash === hash) render(true); else location.hash = hash;
+  }
+
+  function startPicking(which) {
+    state.picking = which;
+    map.getContainer().classList.add("picking");
+    showToast(which === "from" ? "Toca no mapa no ponto de partida." : "Toca no mapa no destino.", 8000);
+    if (window.matchMedia("(max-width: 760px)").matches) $(".mapwrap").scrollIntoView({ behavior: "smooth" });
+  }
+  function stopPicking() {
+    state.picking = null;
+    map.getContainer().classList.remove("picking");
+    hideToast();
+  }
+  map.on("click", e => {
+    if (state.picking) setPoint(state.picking, { kind: "map", label: "Ponto no mapa", lat: e.latlng.lat, lon: e.latlng.lng });
+  });
 
   // ---------- Painel ----------
   const panel = $("#panel");
@@ -156,13 +331,103 @@
   function credits() {
     return `<p class="credits">Horários: ${esc(nice(D.agency.name))}${D.agency.url ? ` (<a href="https://${esc(D.agency.url.replace(/^https?:\/\//i, "").toLowerCase())}" target="_blank" rel="noopener">${esc(D.agency.url.toLowerCase())}</a>)` : ""},
       válidos de ${fmtDate(fromYmd(D.feed.start), { day: "numeric", month: "long" })} a ${fmtDate(fromYmd(D.feed.end), { day: "numeric", month: "long", year: "numeric" })}.
-      Os horários podem sofrer alterações.</p>`;
+      Os horários podem sofrer alterações. Os tempos a pé são estimativas.
+      Pesquisa de moradas: <a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a> / OpenStreetMap.</p>`;
+  }
+
+  function plannerForm() {
+    const val = p => (p ? esc(p.label) : "");
+    return `<form id="planner" class="planner" autocomplete="off">
+      <div class="pfield"><span class="pin pin-from" aria-hidden="true"></span>
+        <input id="fromInput" type="search" placeholder="De onde?" aria-label="Partida" value="${val(state.from)}">
+        <button type="button" class="iconbtn" data-pick="from" title="Escolher a partida no mapa" aria-label="Escolher a partida no mapa">${ICON.pin}</button></div>
+      <div class="pfield"><span class="pin pin-to" aria-hidden="true"></span>
+        <input id="toInput" type="search" placeholder="Para onde vais?" aria-label="Destino" value="${val(state.to)}">
+        <button type="button" class="iconbtn" data-pick="to" title="Escolher o destino no mapa" aria-label="Escolher o destino no mapa">${ICON.pin}</button></div>
+      <ul id="suggest" class="list suggest" hidden></ul>
+      <div class="prow">
+        <select id="whenMode" aria-label="Hora de partida">
+          <option value="now"${state.whenMode === "now" ? " selected" : ""}>Sair agora</option>
+          <option value="at"${state.whenMode === "at" ? " selected" : ""}>Sair às…</option>
+        </select>
+        <input id="whenTime" type="time" aria-label="Hora" value="${esc(state.whenTime)}"${state.whenMode === "at" ? "" : " hidden"}>
+        <button type="submit" class="primary">Ver opções</button>
+      </div>
+    </form>`;
+  }
+
+  function bindPlanner() {
+    const form = $("#planner"), list = $("#suggest");
+    let items = [], field = null, ctrl = null, timer = null;
+
+    const show = () => {
+      list.hidden = !items.length;
+      list.innerHTML = items.map((it, k) => `<li><button type="button" data-k="${k}">
+        <span class="sicon">${it.kind === "gps" ? ICON.gps : it.kind === "stop" ? '<span class="stopdot"></span>' : ICON.pin}</span>
+        <span class="text"><strong>${esc(it.label)}</strong>${it.sub ? `<small>${esc(it.sub)}</small>` : ""}</span></button></li>`).join("");
+    };
+    const suggest = (which, q) => {
+      field = which;
+      const term = fold(q.trim());
+      const base = which === "from" ? [{ ...MY_LOCATION }] : [];
+      const seen = new Set();
+      const stops = term.length < 2 ? [] : D.stops.map((s, i) => i)
+        .filter(i => D.stops[i].key.includes(term) && !seen.has(D.stops[i].key) && seen.add(D.stops[i].key)).slice(0, 4)
+        .map(i => ({ ...stopPoint(i), sub: "Paragem · " + routesOf(i).map(r => D.routes[r].short).join(", ") }));
+      items = [...base, ...stops];
+      show();
+      clearTimeout(timer);
+      if (ctrl) ctrl.abort();
+      if (term.length < 3) return;
+      timer = setTimeout(async () => {
+        ctrl = new AbortController();
+        try {
+          const places = await geocode(q.trim(), ctrl.signal);
+          if (field === which) { items = [...base, ...stops, ...places]; show(); }
+        } catch { /* sem rede ou pedido cancelado */ }
+      }, 350);
+    };
+    const choose = it => {
+      items = []; show();
+      const { sub, ...point } = it;
+      setPoint(field, point);
+    };
+
+    for (const which of ["from", "to"]) {
+      const input = $(`#${which}Input`);
+      input.addEventListener("input", () => { state[which] = null; drawPins(); suggest(which, input.value); });
+      input.addEventListener("focus", () => { input.select(); suggest(which, state[which] ? "" : input.value); });
+      input.addEventListener("keydown", e => { if (e.key === "Escape") { items = []; show(); } });
+    }
+    list.addEventListener("click", e => {
+      const b = e.target.closest("button[data-k]");
+      if (b) choose(items[+b.dataset.k]);
+    });
+    form.addEventListener("click", e => {
+      const b = e.target.closest("[data-pick]");
+      if (b) { items = []; show(); startPicking(b.dataset.pick); }
+    });
+    const whenMode = $("#whenMode"), whenTime = $("#whenTime");
+    whenMode.addEventListener("change", () => {
+      state.whenMode = whenMode.value;
+      whenTime.hidden = state.whenMode !== "at";
+      if (state.whenMode === "at" && !whenTime.value) whenTime.value = state.whenTime = fmtTime(nowMinutes());
+    });
+    whenTime.addEventListener("change", () => { state.whenTime = whenTime.value; });
+    form.addEventListener("submit", e => {
+      e.preventDefault();
+      // Se escreveu o destino mas não escolheu da lista, usa a primeira sugestão.
+      const first = items.find(it => it.kind !== "gps");
+      if (field && !state[field] && first) return choose(first);
+      startPlan();
+    });
   }
 
   function renderHome() {
     panel.innerHTML = `
       ${dateNotice()}
-      <p class="lead">Toca numa paragem ou numa linha para ver os horários.</p>
+      ${plannerForm()}
+      <h3 class="section">Paragens</h3>
       <div class="search"><input id="q" type="search" placeholder="Procurar paragem…" autocomplete="off" aria-label="Procurar paragem"></div>
       <ul id="results" class="list"></ul>
       <h3 class="section">Linhas</h3>
@@ -172,6 +437,7 @@
           <small>${esc(heads.join(" · "))}</small></span></a></li>`;
       }).join("")}</ul>
       ${credits()}`;
+    bindPlanner();
     const q = $("#q"), results = $("#results");
     q.addEventListener("input", () => {
       const term = fold(q.value.trim());
@@ -221,12 +487,19 @@
       <h2>${esc(s.label)}</h2>
       ${s.code ? `<div class="muted small">Paragem n.º ${esc(s.code)}</div>` : ""}
       <div class="badges">${routesOf(i).map(r => `<a href="${routeHref(r)}">${badge(r)}</a>`).join("")}</div>
-      ${opp !== null ? `<a class="linkbtn" href="${stopHref(opp)}">⇄ Paragem do outro lado da rua</a>` : ""}
+      <div class="actions">
+        <button class="linkbtn" id="goHere" type="button">${ICON.pin} Ir para aqui</button>
+        ${opp !== null ? `<a class="linkbtn" href="${stopHref(opp)}">${ICON.swap} Paragem do outro lado da rua</a>` : ""}
+      </div>
       <h3>${isToday() && !state.showAll ? "Próximos autocarros" : "Horários de " + esc(dayLabel())}</h3>
       ${body}
       ${toggle}`;
     const btn = $("#toggleAll");
     if (btn) btn.addEventListener("click", () => { state.showAll = !state.showAll; renderStop(i); });
+    $("#goHere").addEventListener("click", () => {
+      if (!state.from) state.from = MY_LOCATION;
+      setPoint("to", stopPoint(i));
+    });
   }
 
   function renderRoute(r) {
@@ -266,21 +539,128 @@
       ${sections}`;
   }
 
+  // ---------- Viagem: opções e passo a passo ----------
+  const startMinutes = () => {
+    if (state.whenMode === "at" && state.whenTime) { const [h, m] = state.whenTime.split(":").map(Number); return h * 60 + m; }
+    return nowMinutes();
+  };
+  const liveNow = () => isToday() && state.whenMode === "now";
+
+  function legSummary(o) {
+    return o.legs.filter(l => l.type === "ride" || l.min > 0).map(l => l.type === "walk"
+      ? `<span class="walk">${ICON.walk}${l.min}</span>`
+      : badge(l.trip.r)).join('<span class="sep">›</span>');
+  }
+  function leaveText(o) {
+    const extra = o.rides > 1 ? ` · ${o.rides - 1} transbordo${o.rides > 2 ? "s" : ""}` : "";
+    if (!liveNow()) return `Sai às ${fmtTime(o.depart)}${extra}`;
+    const w = o.depart - nowMinutes();
+    return `${w <= 0 ? "Sai já" : `Sai daqui a ${fmtDuration(w)}`}${extra}`;
+  }
+
+  function steps(o) {
+    const out = [];
+    let clock = o.depart;
+    o.legs.forEach(l => {
+      if (l.type === "walk") {
+        clock += l.min;
+        if (l.min === 0) return;
+        const target = l.to === null ? `ao destino` : `à paragem <a href="${stopHref(l.to)}">${esc(D.stops[l.to].label)}</a>`;
+        out.push(`<li class="step"><span class="sicon">${ICON.walk}</span><div>Anda <strong>${l.min} min</strong> (${fmtDist(l.dist)}) até ${target}</div></li>`);
+        return;
+      }
+      const t = l.trip, board = t.st[l.from + 1], alight = t.st[l.to + 1], wait = board - clock;
+      const s0 = t.st[l.from], s1 = t.st[l.to], n = (l.to - l.from) / 2;
+      out.push(`<li class="step ride" style="--c:${D.routes[t.r].color}">${badge(t.r)}<div>
+        <div>Apanha às <strong>${fmtTime(board)}</strong> em <a href="${stopHref(s0)}">${esc(D.stops[s0].label)}</a>${wait > 1 && clock !== o.depart + o.legs[0].min ? ` <span class="muted small">(espera ${wait} min)</span>` : ""}</div>
+        <div class="muted small">Autocarro para ${esc(t.h)} · ${n} ${n > 1 ? "paragens" : "paragem"} · ${alight - board} min</div>
+        <div>Sai às <strong>${fmtTime(alight)}</strong> em <a href="${stopHref(s1)}">${esc(D.stops[s1].label)}</a></div></div></li>`);
+      clock = alight;
+    });
+    out.push(`<li class="step"><span class="sicon"><span class="pin pin-to"></span></span><div>Chegas às <strong>${fmtTime(o.arrive)}</strong> a ${esc(state.to.label)}</div></li>`);
+    return `<ol class="steps">${out.join("")}</ol>`;
+  }
+
+  function renderTrip(moveMap) {
+    const t0 = startMinutes();
+    const { options, walkOnly, noStopsNear } = planner.plan(activeTrips(), state.from, state.to, t0);
+    const noBusText = noStopsNear
+      ? `Não há paragens de autocarro a menos de 15 min a pé ${noStopsNear === "from" ? "do ponto de partida" : "do destino"}.`
+      : `Não encontrámos autocarros para esta viagem ${onDay()} a partir das ${fmtTime(t0)}.`;
+    const canWalk = walkOnly.min <= 90;
+    const choices = [...options.map((o, i) => i), ...(canWalk ? ["walk"] : [])];
+    if (!choices.includes(state.selected)) state.selected = choices[0] ?? null;
+    const sel = state.selected === "walk" ? "walk" : options[state.selected] || null;
+
+    const cards = options.map((o, i) => `<button type="button" class="opt" data-opt="${i}" aria-pressed="${state.selected === i}">
+        <span class="opt-top"><strong>${fmtTime(o.depart)} → ${fmtTime(o.arrive)}</strong><span>${fmtDuration(o.duration)}</span></span>
+        <span class="opt-legs">${legSummary(o)}</span>
+        <span class="opt-sub">${leaveText(o)}</span></button>`);
+    if (canWalk) cards.push(`<button type="button" class="opt" data-opt="walk" aria-pressed="${state.selected === "walk"}">
+        <span class="opt-top"><strong>${ICON.walk} Ir a pé</strong><span>${fmtDuration(walkOnly.min)}</span></span>
+        <span class="opt-sub">${fmtDist(walkOnly.dist)} · chegas às ${fmtTime(t0 + walkOnly.min)}</span></button>`);
+
+    const when = state.whenMode === "at" && state.whenTime ? `Saída às ${fmtTime(t0)}` : "Saída agora";
+    let detail = "";
+    if (sel === "walk") detail = `<ol class="steps"><li class="step"><span class="sicon">${ICON.walk}</span><div>Anda <strong>${fmtDuration(walkOnly.min)}</strong> (${fmtDist(walkOnly.dist)}) até ao destino</div></li>
+      <li class="step"><span class="sicon"><span class="pin pin-to"></span></span><div>Chegas às <strong>${fmtTime(t0 + walkOnly.min)}</strong></div></li></ol>`;
+    else if (sel) detail = steps(sel);
+
+    panel.innerHTML = `<a class="back" href="#">← Alterar viagem</a>
+      ${dateNotice()}
+      <div class="od">
+        <div><span class="pin pin-from"></span>${esc(state.from.label)}</div>
+        <div><span class="pin pin-to"></span>${esc(state.to.label)}</div>
+      </div>
+      <p class="muted small">${when} · ${esc(dayLabel())}</p>
+      ${options.length ? "" : `<p class="notice">${noBusText}</p>`}
+      <div class="opts">${cards.join("")}</div>
+      ${detail ? `<h3>Passo a passo</h3>${detail}` : ""}`;
+
+    panel.querySelectorAll("[data-opt]").forEach(b => b.addEventListener("click", () => {
+      state.selected = b.dataset.opt === "walk" ? "walk" : +b.dataset.opt;
+      render(true);
+    }));
+    drawPlan(sel);
+    if (moveMap) {
+      const b = L.latLngBounds([[state.from.lat, state.from.lon], [state.to.lat, state.to.lon]]);
+      if (planLayer.getLayers().length) b.extend(planLayer.getBounds());
+      map.fitBounds(b, { padding: [40, 40], maxZoom: 17 });
+    }
+  }
+
   // ---------- Navegação (pelo endereço, para se poder partilhar links) ----------
+  function parsePoint(text, label) {
+    const [lat, lon] = (text || "").split(",").map(Number);
+    return Number.isFinite(lat) && Number.isFinite(lon) ? { kind: "map", label, lat, lon } : null;
+  }
+  const samePoint = (a, b) => a && b && a.lat != null && Math.abs(a.lat - b.lat) < 1e-5 && Math.abs(a.lon - b.lon) < 1e-5;
+
   function render(moveMap) {
-    const [kind, rawId] = location.hash.slice(1).split("/");
-    const id = decodeURIComponent(rawId || "");
+    const parts = location.hash.slice(1).split("/").map(decodeURIComponent);
+    const [kind, id] = parts;
     const r = kind === "linha" ? D.routes.findIndex(x => x.short === id) : -1;
     const s = kind === "paragem" ? D.stops.findIndex(x => x.id === id) : -1;
-    state.view = r >= 0 ? "route" : s >= 0 ? "stop" : kind === "perto" && state.userPos ? "nearby" : "home";
+    if (kind === "viagem") {
+      const f = parsePoint(parts[1], "Origem"), t = parsePoint(parts[2], "Destino");
+      if (f && t) {
+        if (!samePoint(state.from, f)) state.from = f;
+        if (!samePoint(state.to, t)) state.to = t;
+        drawPins();
+      }
+    }
+    const tripOk = kind === "viagem" && state.from && state.to && state.from.lat != null && state.to.lat != null;
+    state.view = r >= 0 ? "route" : s >= 0 ? "stop" : tripOk ? "trip" : kind === "perto" && state.userPos ? "nearby" : "home";
     state.route = r >= 0 ? r : null;
     state.stop = s >= 0 ? s : null;
 
     // Mantém aberto o que estava aberto quando se volta a desenhar o mesmo ecrã.
     const open = new Set([...panel.querySelectorAll("details[open]")].map(d => d.dataset.key));
     const scroll = panel.scrollTop;
+    if (state.view !== "trip") drawPlan(null);
     if (state.view === "route") renderRoute(r);
     else if (state.view === "stop") renderStop(s);
+    else if (state.view === "trip") renderTrip(moveMap);
     else if (state.view === "nearby") renderNearby();
     else renderHome();
     if (!moveMap) {
@@ -299,7 +679,7 @@
   $("#lines").innerHTML = D.routes.map((r, i) =>
     `<a class="chip" href="${routeHref(i)}">${badge(i)}<span>${esc(r.label)}</span></a>`).join("");
 
-  window.addEventListener("hashchange", () => { state.showAll = false; render(true); });
+  window.addEventListener("hashchange", () => { state.showAll = false; stopPicking(); render(true); });
 
   // ---------- Data ----------
   const dateInput = $("#date"), todayBtn = $("#today");
@@ -318,34 +698,35 @@
   });
   todayBtn.addEventListener("click", () => setDate(startOfToday()));
 
-  // ---------- Localização ----------
+  // ---------- Avisos ----------
   const toast = $("#toast");
   let toastTimer;
-  function showToast(msg) {
+  function showToast(msg, ms = 4000) {
     toast.textContent = msg;
     toast.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { toast.hidden = true; }, 4000);
+    toastTimer = setTimeout(() => { toast.hidden = true; }, ms);
   }
-  $("#locate").addEventListener("click", () => {
-    if (!navigator.geolocation) return showToast("Este dispositivo não permite obter a localização.");
-    navigator.geolocation.getCurrentPosition(pos => {
-      state.userPos = [pos.coords.latitude, pos.coords.longitude];
-      if (userMarker) userMarker.setLatLng(state.userPos);
-      else userMarker = L.circleMarker(state.userPos, { radius: 8, color: "#ffffff", weight: 3, fillColor: "#1a73e8", fillOpacity: 1, interactive: false }).addTo(map);
-      map.setView(state.userPos, 16);
+  function hideToast() { clearTimeout(toastTimer); toast.hidden = true; }
+
+  $("#locate").addEventListener("click", async () => {
+    try {
+      const pos = await locate();
+      drawPins();
+      map.setView(pos, 16);
       if (location.hash === "#perto") render(false); else location.hash = "#perto";
-    }, () => showToast("Não foi possível obter a sua localização."), { enableHighAccuracy: true, timeout: 10000 });
+    } catch (e) { showToast(e.message); }
   });
 
   // Atualiza os "daqui a X min" a cada minuto.
   let lastMinute = nowMinutes();
   setInterval(() => {
-    if (!isToday() || (state.view !== "stop" && state.view !== "route")) return;
+    const live = state.view === "stop" || state.view === "route" || (state.view === "trip" && state.whenMode === "now");
+    if (!isToday() || !live) return;
     const m = nowMinutes();
     if (m !== lastMinute) { lastMinute = m; render(false); }
   }, 15000);
 
   setDate(startOfToday());
-  if (state.view === "route" || state.view === "stop") render(true);
+  if (state.view !== "home") render(true);
 })();
