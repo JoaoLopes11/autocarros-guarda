@@ -1,0 +1,7 @@
+route_id,agency_id,route_short_name,route_long_name,route_type,route_color
+201,1,"U01","LINHA VERDE",3,a9d08e
+202,1,"U02","LINHA AZUL",3,9bc2e6
+203,1,"U03","LINHA VERMELHA",3,ff4b4b
+204,1,"U04","LINHA AMARELA",3,ffc000
+205,1,"U05","LINHA ROSA",3,dd9bcf
+206,1,"U06","LINHA LARANJA",3,fd7f4d
