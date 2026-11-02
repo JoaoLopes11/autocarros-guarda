@@ -9,7 +9,7 @@ Mapa web com as linhas, paragens e horários dos autocarros urbanos da Guarda, g
 - `scripts/serve.mjs`: servidor local para ver o site
 - `docs/`: o site completo (é só esta pasta que se publica)
   - `docs/planner.js`: planeador de viagens (a pé + autocarro, com transbordos), calculado no próprio browser
-  - a pesquisa de moradas usa o serviço gratuito [Photon](https://photon.komoot.io) (OpenStreetMap); os tempos a pé são estimativas pela distância
+  - a pesquisa de moradas usa o serviço gratuito [Photon](https://photon.komoot.io) (OpenStreetMap); os percursos e tempos a pé vêm do serviço gratuito [OSRM da FOSSGIS](https://routing.openstreetmap.de) (OpenStreetMap)
 
 ## Atualizar os horários
 

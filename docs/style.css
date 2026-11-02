@@ -243,6 +243,7 @@ summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: 14
 .step > .badge { margin-top: 1px; }
 .step a { color: var(--accent); }
 .step.ride { border-left: 4px solid var(--c); padding-left: 8px; margin-left: -12px; }
+.warn { display: inline-block; margin-top: 2px; color: #b3261e; font-size: 13px; font-weight: 600; }
 .picking { cursor: crosshair; }
 .picking .leaflet-interactive { cursor: crosshair; }
 .mpin-from { background: #1a73e8; border: 3px solid #fff; border-radius: 50%; box-shadow: 0 1px 4px rgba(0, 0, 0, .4); }

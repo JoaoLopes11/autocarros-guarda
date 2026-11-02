@@ -190,23 +190,58 @@
     return [[ends[0].lat, ends[0].lon], ...shape.slice(i0, idx + 1), [ends[1].lat, ends[1].lon]];
   }
 
+  // ---------- Percursos a pé pelas ruas (OSRM do OpenStreetMap, gratuito) ----------
+  // O planeador estima os tempos a pé pela distância em linha reta. Para as opções mostradas
+  // vai-se buscar o percurso real pelas ruas, que é o que se desenha e se mostra no passo a passo.
+  const walkCache = new Map();
+  const stopLL = i => [D.stops[i].lat, D.stops[i].lon];
+  const legEnds = leg => [leg.from === null ? [state.from.lat, state.from.lon] : stopLL(leg.from),
+                          leg.to === null ? [state.to.lat, state.to.lon] : stopLL(leg.to)];
+  const llKey = ([a, b]) => `${a[1].toFixed(5)},${a[0].toFixed(5)};${b[1].toFixed(5)},${b[0].toFixed(5)}`;
+
+  function walkRoute(leg) {
+    const key = llKey(legEnds(leg));
+    if (walkCache.has(key)) return walkCache.get(key);
+    const entry = { done: false, data: null };
+    walkCache.set(key, entry);
+    fetch(`https://routing.openstreetmap.de/routed-foot/route/v1/foot/${key}?overview=full&geometries=geojson`)
+      .then(res => (res.ok ? res.json() : Promise.reject(new Error(res.status))))
+      .then(j => {
+        const r = j.routes && j.routes[0];
+        if (r) entry.data = { coords: r.geometry.coordinates.map(([lon, lat]) => [lat, lon]), dist: r.distance, min: Math.max(1, Math.ceil(r.distance / 75)) };
+      })
+      .catch(() => { /* fica a estimativa */ })
+      .finally(() => { entry.done = true; if (state.view === "trip") render(false); });
+    return entry;
+  }
+  // Distância e minutos a pé de um troço: o percurso real se já chegou, senão a estimativa.
+  function walkInfo(leg) {
+    const e = walkCache.get(llKey(legEnds(leg)));
+    return e && e.data ? { dist: e.data.dist, min: e.data.min, real: true } : { dist: leg.dist * 1.3, min: leg.min, real: false };
+  }
+  function timing(o) {
+    const rides = o.legs.filter(l => l.type === "ride"), first = rides[0], last = rides[rides.length - 1];
+    const depart = first.trip.st[first.from + 1] - walkInfo(o.legs[0]).min;
+    const arrive = last.trip.st[last.to + 1] + walkInfo(o.legs[o.legs.length - 1]).min;
+    return { depart, arrive, duration: arrive - depart };
+  }
+
   function drawPlan(option) {
     planLayer.clearLayers();
     if (!option) return;
-    const fromLL = [state.from.lat, state.from.lon], toLL = [state.to.lat, state.to.lon];
-    const walkLine = pts => L.polyline(pts, { renderer: planRenderer, color: "#3b3f3d", weight: 4, dashArray: "1 9", lineCap: "round", interactive: false }).addTo(planLayer);
-    if (option === "walk") { walkLine([fromLL, toLL]); return; }
-    const ll = i => (i === null ? null : [D.stops[i].lat, D.stops[i].lon]);
     for (const leg of option.legs) {
       if (leg.type === "walk") {
-        if (leg.min > 0) walkLine([ll(leg.from) || fromLL, ll(leg.to) || toLL]);
+        if (leg.min === 0) continue;
+        const ends = legEnds(leg), route = walkRoute(leg);
+        const pts = route.data ? [ends[0], ...route.data.coords, ends[1]] : ends;
+        L.polyline(pts, { renderer: planRenderer, color: "#3b3f3d", weight: 4, dashArray: "1 9", lineCap: "round", opacity: route.done ? 1 : .4, interactive: false }).addTo(planLayer);
         continue;
       }
       const pts = rideGeometry(leg), color = D.routes[leg.trip.r].color;
       L.polyline(pts, { renderer: planRenderer, color: "#1a1a1a", weight: 10, opacity: .35, interactive: false }).addTo(planLayer);
       L.polyline(pts, { renderer: planRenderer, color, weight: 6, interactive: false }).addTo(planLayer);
       for (const p of [leg.from, leg.to]) {
-        L.circleMarker(ll(leg.trip.st[p]), { renderer: planRenderer, radius: 7, weight: 3, color: "#1a1a1a", fillColor: "#ffffff", fillOpacity: 1, interactive: false }).addTo(planLayer);
+        L.circleMarker(stopLL(leg.trip.st[p]), { renderer: planRenderer, radius: 7, weight: 3, color: "#1a1a1a", fillColor: "#ffffff", fillOpacity: 1, interactive: false }).addTo(planLayer);
       }
     }
   }
@@ -331,8 +366,9 @@
   function credits() {
     return `<p class="credits">Horários: ${esc(nice(D.agency.name))}${D.agency.url ? ` (<a href="https://${esc(D.agency.url.replace(/^https?:\/\//i, "").toLowerCase())}" target="_blank" rel="noopener">${esc(D.agency.url.toLowerCase())}</a>)` : ""},
       válidos de ${fmtDate(fromYmd(D.feed.start), { day: "numeric", month: "long" })} a ${fmtDate(fromYmd(D.feed.end), { day: "numeric", month: "long", year: "numeric" })}.
-      Os horários podem sofrer alterações. Os tempos a pé são estimativas.
-      Pesquisa de moradas: <a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a> / OpenStreetMap.</p>`;
+      Os horários podem sofrer alterações. Os tempos a pé são aproximados.
+      Pesquisa de moradas: <a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a>;
+      percursos a pé: <a href="https://routing.openstreetmap.de" target="_blank" rel="noopener">OSRM / FOSSGIS</a> (OpenStreetMap).</p>`;
   }
 
   function plannerForm() {
@@ -548,62 +584,84 @@
 
   function legSummary(o) {
     return o.legs.filter(l => l.type === "ride" || l.min > 0).map(l => l.type === "walk"
-      ? `<span class="walk">${ICON.walk}${l.min}</span>`
+      ? `<span class="walk">${ICON.walk}${walkInfo(l).min}</span>`
       : badge(l.trip.r)).join('<span class="sep">›</span>');
   }
   function leaveText(o) {
     const extra = o.rides > 1 ? ` · ${o.rides - 1} transbordo${o.rides > 2 ? "s" : ""}` : "";
-    if (!liveNow()) return `Sai às ${fmtTime(o.depart)}${extra}`;
-    const w = o.depart - nowMinutes();
+    const { depart } = timing(o);
+    if (!liveNow()) return `Sai às ${fmtTime(depart)}${extra}`;
+    const w = depart - nowMinutes();
     return `${w <= 0 ? "Sai já" : `Sai daqui a ${fmtDuration(w)}`}${extra}`;
   }
 
+  function walkStep(l, target) {
+    const w = walkInfo(l);
+    return `<li class="step"><span class="sicon">${ICON.walk}</span><div>Anda <strong>${fmtDuration(w.min)}</strong> (${fmtDist(w.dist)}) até ${target}</div></li>`;
+  }
+
   function steps(o) {
-    const out = [];
-    let clock = o.depart;
+    const out = [], tm = timing(o);
+    let clock = tm.depart, firstRide = true;
     o.legs.forEach(l => {
       if (l.type === "walk") {
-        clock += l.min;
+        clock += walkInfo(l).min;
         if (l.min === 0) return;
-        const target = l.to === null ? `ao destino` : `à paragem <a href="${stopHref(l.to)}">${esc(D.stops[l.to].label)}</a>`;
-        out.push(`<li class="step"><span class="sicon">${ICON.walk}</span><div>Anda <strong>${l.min} min</strong> (${fmtDist(l.dist)}) até ${target}</div></li>`);
+        out.push(walkStep(l, l.to === null ? "ao destino" : `à paragem <a href="${stopHref(l.to)}">${esc(D.stops[l.to].label)}</a>`));
         return;
       }
       const t = l.trip, board = t.st[l.from + 1], alight = t.st[l.to + 1], wait = board - clock;
       const s0 = t.st[l.from], s1 = t.st[l.to], n = (l.to - l.from) / 2;
+      const note = firstRide ? ""
+        : wait < 1 ? ` <span class="warn">Ligação apertada: pode não dar tempo</span>`
+        : wait > 1 ? ` <span class="muted small">(espera ${wait} min)</span>` : "";
       out.push(`<li class="step ride" style="--c:${D.routes[t.r].color}">${badge(t.r)}<div>
-        <div>Apanha às <strong>${fmtTime(board)}</strong> em <a href="${stopHref(s0)}">${esc(D.stops[s0].label)}</a>${wait > 1 && clock !== o.depart + o.legs[0].min ? ` <span class="muted small">(espera ${wait} min)</span>` : ""}</div>
+        <div>Apanha às <strong>${fmtTime(board)}</strong> em <a href="${stopHref(s0)}">${esc(D.stops[s0].label)}</a>${note}</div>
         <div class="muted small">Autocarro para ${esc(t.h)} · ${n} ${n > 1 ? "paragens" : "paragem"} · ${alight - board} min</div>
         <div>Sai às <strong>${fmtTime(alight)}</strong> em <a href="${stopHref(s1)}">${esc(D.stops[s1].label)}</a></div></div></li>`);
       clock = alight;
+      firstRide = false;
     });
-    out.push(`<li class="step"><span class="sicon"><span class="pin pin-to"></span></span><div>Chegas às <strong>${fmtTime(o.arrive)}</strong> a ${esc(state.to.label)}</div></li>`);
+    out.push(`<li class="step"><span class="sicon"><span class="pin pin-to"></span></span><div>Chegas às <strong>${fmtTime(tm.arrive)}</strong> a ${esc(state.to.label)}</div></li>`);
     return `<ol class="steps">${out.join("")}</ol>`;
   }
 
   function renderTrip(moveMap) {
     const t0 = startMinutes();
-    const { options, walkOnly, noStopsNear } = planner.plan(activeTrips(), state.from, state.to, t0);
+    const { options: found, walkOnly, noStopsNear } = planner.plan(activeTrips(), state.from, state.to, t0);
+    const canWalk = walkOnly.min <= 90;
+    // "Ir a pé" tratado como uma opção com um único troço a pé.
+    const walkOpt = { legs: [{ type: "walk", from: null, to: null, dist: walkOnly.dist, min: walkOnly.min }] };
+    // Pede os percursos a pé reais de todas as opções (ficam em cache).
+    [...found, ...(canWalk ? [walkOpt] : [])].forEach(o => o.legs.forEach(l => { if (l.type === "walk" && l.min > 0) walkRoute(l); }));
+    const walk = walkInfo(walkOpt.legs[0]);
+    // Com os tempos reais, esconde opções em que se anda quase tanto como a viagem toda a pé.
+    const walkTotal = o => o.legs.reduce((m, l) => m + (l.type === "walk" ? walkInfo(l).min : 0), 0);
+    // Também esconde as que, com o tempo a pé real, já obrigariam a ter saído antes da hora pedida.
+    const options = found.filter(o => timing(o).depart >= t0 && (!canWalk || walkTotal(o) < walk.min * 0.8));
     const noBusText = noStopsNear
       ? `Não há paragens de autocarro a menos de 15 min a pé ${noStopsNear === "from" ? "do ponto de partida" : "do destino"}.`
+      : found.length ? "Para esta viagem compensa ir a pé."
       : `Não encontrámos autocarros para esta viagem ${onDay()} a partir das ${fmtTime(t0)}.`;
-    const canWalk = walkOnly.min <= 90;
     const choices = [...options.map((o, i) => i), ...(canWalk ? ["walk"] : [])];
     if (!choices.includes(state.selected)) state.selected = choices[0] ?? null;
-    const sel = state.selected === "walk" ? "walk" : options[state.selected] || null;
+    const sel = state.selected === "walk" ? walkOpt : options[state.selected] || null;
 
-    const cards = options.map((o, i) => `<button type="button" class="opt" data-opt="${i}" aria-pressed="${state.selected === i}">
-        <span class="opt-top"><strong>${fmtTime(o.depart)} → ${fmtTime(o.arrive)}</strong><span>${fmtDuration(o.duration)}</span></span>
+    const cards = options.map((o, i) => {
+      const tm = timing(o);
+      return `<button type="button" class="opt" data-opt="${i}" aria-pressed="${state.selected === i}">
+        <span class="opt-top"><strong>${fmtTime(tm.depart)} → ${fmtTime(tm.arrive)}</strong><span>${fmtDuration(tm.duration)}</span></span>
         <span class="opt-legs">${legSummary(o)}</span>
-        <span class="opt-sub">${leaveText(o)}</span></button>`);
+        <span class="opt-sub">${leaveText(o)}</span></button>`;
+    });
     if (canWalk) cards.push(`<button type="button" class="opt" data-opt="walk" aria-pressed="${state.selected === "walk"}">
-        <span class="opt-top"><strong>${ICON.walk} Ir a pé</strong><span>${fmtDuration(walkOnly.min)}</span></span>
-        <span class="opt-sub">${fmtDist(walkOnly.dist)} · chegas às ${fmtTime(t0 + walkOnly.min)}</span></button>`);
+        <span class="opt-top"><strong>${ICON.walk} Ir a pé</strong><span>${fmtDuration(walk.min)}</span></span>
+        <span class="opt-sub">${fmtDist(walk.dist)} · chegas às ${fmtTime(t0 + walk.min)}</span></button>`);
 
     const when = state.whenMode === "at" && state.whenTime ? `Saída às ${fmtTime(t0)}` : "Saída agora";
     let detail = "";
-    if (sel === "walk") detail = `<ol class="steps"><li class="step"><span class="sicon">${ICON.walk}</span><div>Anda <strong>${fmtDuration(walkOnly.min)}</strong> (${fmtDist(walkOnly.dist)}) até ao destino</div></li>
-      <li class="step"><span class="sicon"><span class="pin pin-to"></span></span><div>Chegas às <strong>${fmtTime(t0 + walkOnly.min)}</strong></div></li></ol>`;
+    if (sel === walkOpt) detail = `<ol class="steps">${walkStep(walkOpt.legs[0], "ao destino")}
+      <li class="step"><span class="sicon"><span class="pin pin-to"></span></span><div>Chegas às <strong>${fmtTime(t0 + walk.min)}</strong></div></li></ol>`;
     else if (sel) detail = steps(sel);
 
     panel.innerHTML = `<a class="back" href="#">← Alterar viagem</a>
@@ -679,7 +737,7 @@
   $("#lines").innerHTML = D.routes.map((r, i) =>
     `<a class="chip" href="${routeHref(i)}">${badge(i)}<span>${esc(r.label)}</span></a>`).join("");
 
-  window.addEventListener("hashchange", () => { state.showAll = false; stopPicking(); render(true); });
+  window.addEventListener("hashchange", () => { state.showAll = false; state.selected = 0; stopPicking(); render(true); });
 
   // ---------- Data ----------
   const dateInput = $("#date"), todayBtn = $("#today");
