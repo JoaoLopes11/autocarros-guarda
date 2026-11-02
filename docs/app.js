@@ -204,14 +204,15 @@
     if (walkCache.has(key)) return walkCache.get(key);
     const entry = { done: false, data: null };
     walkCache.set(key, entry);
-    fetch(`https://routing.openstreetmap.de/routed-foot/route/v1/foot/${key}?overview=full&geometries=geojson`)
+    const attempt = tries => fetch(`https://routing.openstreetmap.de/routed-foot/route/v1/foot/${key}?overview=full&geometries=geojson`)
       .then(res => (res.ok ? res.json() : Promise.reject(new Error(res.status))))
       .then(j => {
         const r = j.routes && j.routes[0];
         if (r) entry.data = { coords: r.geometry.coordinates.map(([lon, lat]) => [lat, lon]), dist: r.distance, min: Math.max(1, Math.ceil(r.distance / 75)) };
       })
-      .catch(() => { /* fica a estimativa */ })
-      .finally(() => { entry.done = true; if (state.view === "trip") render(false); });
+      // Uma nova tentativa passado um bocado; se voltar a falhar fica a estimativa.
+      .catch(() => (tries < 2 ? new Promise(ok => setTimeout(ok, 1500)).then(() => attempt(tries + 1)) : null));
+    attempt(1).finally(() => { entry.done = true; if (state.view === "trip") render(false); });
     return entry;
   }
   // Distância e minutos a pé de um troço: o percurso real se já chegou, senão a estimativa.

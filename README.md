@@ -15,7 +15,8 @@ Mapa web com as linhas, paragens e horários dos autocarros urbanos da Guarda, g
 
 1. Substituir os ficheiros `.txt` pelos do novo feed GTFS.
 2. Correr `node scripts/build-data.mjs`.
-3. Publicar outra vez a pasta `docs/`.
+3. Em `docs/index.html`, aumentar o número `?v=` dos ficheiros (ex.: `?v=5` → `?v=6`), para os browsers não ficarem com a versão antiga em cache.
+4. Publicar outra vez a pasta `docs/`.
 
 O feed atual só é válido até **31/12/2026**.
 
